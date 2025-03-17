@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 # DhanHQ credentials – update these with your actual details
 DHAN_CLIENT_ID = "1103141889"
-DHAN_ACCESS_TOKEN = "your_access_token_here"
+DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzQ0NDc2ODEwLCJ0b2tlbkNvbnN1bWVyVHlwZSI6IlNFTEYiLCJ3ZWJob29rVXJsIjoiIiwiZGhhbkNsaWVudElkIjoiMTEwMzE0MTg4OSJ9.wMeUYEuX0U2txEfiyXnIssR4fepBOSuXEduH3CChCNS6MHV4Gy_qTDj3FRf5rKv4r1airtfEOq13T3QNWLuHPA"
 
 dhan = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
 
