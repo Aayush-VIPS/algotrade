@@ -1,83 +1,105 @@
-import json
 import logging
+import json
+import csv
+import io
 import requests
-from flask import Flask, request
-from dhanhq import DhanHQ
-import pandas as pd
+from flask import Flask, request, jsonify, abort
+from dhanhq import dhanhq
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Initialize Flask app
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Dhan API Setup
-DHAN_API_KEY = "your_dhan_api_key_here"
-dhan = DhanHQ(DHAN_API_KEY)
+# DhanHQ credentials
+DHAN_CLIENT_ID = "1103141889"
+DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzQ0NDc2ODEwLCJ0b2tlbkNvbnN1bWVyVHlwZSI6IlNFTEYiLCJ3ZWJob29rVXJsIjoiIiwiZGhhbkNsaWVudElkIjoiMTEwMzE0MTg4OSJ9.wMeUYEuX0U2txEfiyXnIssR4fepBOSuXEduH3CChCNS6MHV4Gy_qTDj3FRf5rKv4r1airtfEOq13T3QNWLuHPA"
+
+dhan = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
 
 # Load instrument list
-instrument_file = "api-scrip-master-detailed.csv"
-instrument_df = pd.read_csv(instrument_file)
-logging.info("Instrument list loaded successfully.")
+instrument_lookup = {}
+remote_csv_url = "https://drive.google.com/uc?export=download&id=1HHUmaD3xL3hnVgDDqE2Rt98R5N7olLTs"
 
-def get_security_id(symbol, expiry, option_type, strike_price):
-    """Fetch the correct security_id for index options."""
-    df = instrument_df
-    df_filtered = df[(df['UNDERLYING_SYMBOL'] == symbol) &
-                     (df['SM_EXPIRY_DATE'] == expiry) &
-                     (df['OPTION_TYPE'] == option_type) &
-                     (df['STRIKE_PRICE'] == float(strike_price))]
-    
-    if df_filtered.empty:
-        logger.error(f"No matching security_id found for {symbol} {expiry} {option_type} {strike_price}")
-        return None
-    
-    return df_filtered.iloc[0]['SECURITY_ID']
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
+def load_instrument_list():
+    global instrument_lookup
     try:
-        data = request.json
-        logger.info(f"Received webhook data: {data}")
-        
-        action = data.get("action").upper()
-        symbol = data.get("security_id")
-        quantity = int(data.get("quantity", 0))
-        exchange_segment = data.get("exchange_segment", "NSE_FNO")
-        order_type = data.get("order_type", "MARKET")
-        product_type = data.get("product_type", "INTRA")
-        price = float(data.get("price", 0))
-        
-        # Extract expiry, option type, and strike price from symbol
-        expiry = "2024-10-31"  # Update dynamically if needed
-        option_type = "CE" if "C" in symbol else "PE"
-        strike_price = symbol[-5:]
-        
-        # Get correct security_id
-        security_id = get_security_id("NIFTY", expiry, option_type, strike_price)
-        if not security_id:
-            return json.dumps({"status": "failure", "message": "Invalid security_id"}), 400
-        
-        # Place order
-        order_payload = {
-            "transaction_type": action,
-            "security_id": security_id,
-            "quantity": quantity,
-            "exchange_segment": exchange_segment,
-            "order_type": order_type,
-            "product_type": product_type,
-            "price": price
-        }
-        
-        logger.info(f"Placing order: {order_payload}")
-        response = dhan.place_order(order_payload)
-        logger.info(f"Order response: {response}")
-        
-        return json.dumps(response), 200
+        response = requests.get(remote_csv_url)
+        response.raise_for_status()
+        csvfile = io.StringIO(response.content.decode('utf-8'))
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            symbol = row.get("SYMBOL_NAME") or row.get("DISPLAY_NAME")
+            sec_id = row.get("SECURITY_ID")
+            if symbol and sec_id:
+                instrument_lookup[symbol.strip().upper()] = sec_id.strip()
+        logging.info("Instrument list loaded successfully.")
     except Exception as e:
-        logger.error(f"Error processing webhook: {str(e)}")
-        return json.dumps({"status": "error", "message": str(e)}), 500
+        logging.error("Failed to load instrument list: %s", e)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+load_instrument_list()
+
+# Exchange & Product Mappings
+EXCHANGE_MAP = {"NSE_FNO": dhan.NSE_FNO}
+PRODUCT_MAP = {"INTRA": dhan.INTRA}
+ORDER_TYPE_MAP = {"MARKET": dhan.MARKET, "LIMIT": dhan.LIMIT}
+
+# Fetch correct security ID for options
+def get_option_security_id(symbol, expiry, strike, option_type):
+    try:
+        option_chain = dhan.option_chain(under_security_id=13, under_exchange_segment="IDX_I", expiry=expiry)
+        for option in option_chain['data']:
+            if (option['strikePrice'] == float(strike) and option['optionType'] == option_type):
+                return option['securityId']
+    except Exception as e:
+        logging.error("Failed to fetch option chain: %s", e)
+    return None
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    logging.info("Received request from IP: %s", request.remote_addr)
+    
+    try:
+        data = request.get_json()
+    except Exception as e:
+        logging.error("Invalid JSON payload: %s", e)
+        abort(400, "Invalid JSON payload")
+    
+    logging.info("Received webhook data: %s", data)
+    action, quantity = data.get("action"), data.get("quantity")
+    if not action or quantity is None:
+        logging.error("Missing required fields: 'action' or 'quantity'")
+        abort(400, "Missing required fields")
+    
+    symbol, expiry, strike, option_type = data.get("symbol"), data.get("expiry"), data.get("strike"), data.get("option_type")
+    security_id = instrument_lookup.get(symbol.upper()) if symbol else None
+    
+    if not security_id and symbol and expiry and strike and option_type:
+        security_id = get_option_security_id(symbol, expiry, strike, option_type)
+    
+    if not security_id:
+        logging.error("Security ID not found.")
+        abort(400, "Security ID not found")
+    
+    transaction_type = dhan.BUY if action.upper() == "BUY" else dhan.SELL
+    exchange_segment = EXCHANGE_MAP.get(data.get("exchange_segment", "NSE_FNO"), dhan.NSE_FNO)
+    product_type = PRODUCT_MAP.get(data.get("product_type", "INTRA"), dhan.INTRA)
+    order_type = ORDER_TYPE_MAP.get(data.get("order_type", "MARKET"), dhan.MARKET)
+    price = data.get("price", 0)
+    
+    try:
+        order_response = dhan.place_order(
+            security_id=security_id,
+            exchange_segment=exchange_segment,
+            transaction_type=transaction_type,
+            quantity=quantity,
+            order_type=order_type,
+            product_type=product_type,
+            price=price
+        )
+        logging.info("Order placed successfully: %s", order_response)
+        return jsonify({"status": "success", "order_response": order_response}), 200
+    except Exception as e:
+        logging.error("Order placement failed: %s", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
