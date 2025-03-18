@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO)
 
 # DhanHQ credentials – update these with your actual details
 DHAN_CLIENT_ID = "1103141889"
-DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzQ0NDc2ODEwLCJ0b2tlbkNvbnN1bWVyVHlwZSI6IlNFTEYiLCJ3ZWJob29rVXJsIjoiIiwiZGhhbkNsaWVudElkIjoiMTEwMzE0MTg4OSJ9.wMeUYEuX0U2txEfiyXnIssR4fepBOSuXEduH3CChCNS6MHV4Gy_qTDj3FRf5rKv4r1airtfEOq13T3QNWLuHPA"
+DHAN_ACCESS_TOKEN = "your_dhan_access_token_here"
 
 dhan = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
 
@@ -19,10 +19,7 @@ dhan = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
 instrument_lookup = {}
 
 def load_instrument_list_from_url(url):
-    """
-    Loads the instrument list CSV from a remote URL and builds a lookup dictionary.
-    The CSV is expected to have the headers: DISPLAY_NAME (or SYMBOL_NAME) and SECURITY_ID.
-    """
+    """Loads the instrument list CSV from a remote URL and builds a lookup dictionary."""
     global instrument_lookup
     try:
         response = requests.get(url)
@@ -39,9 +36,11 @@ def load_instrument_list_from_url(url):
     except Exception as e:
         logging.error("Failed to load instrument list: %s", e)
 
+# Load instrument list
 remote_csv_url = "https://drive.google.com/uc?export=download&id=1HHUmaD3xL3hnVgDDqE2Rt98R5N7olLTs"
 load_instrument_list_from_url(remote_csv_url)
 
+# Exchange, Product & Order Type Mapping
 EXCHANGE_MAP = {
     "NSE": dhan.NSE,
     "NSE_FNO": dhan.NSE_FNO,
@@ -85,8 +84,9 @@ def webhook():
         logging.error("Missing required fields: 'action' or 'quantity'")
         abort(400, description="Missing required fields: 'action' and 'quantity'")
     
+    # Security ID Lookup (Fix applied)
     security_id = data.get("security_id")
-    if not security_id:
+    if not security_id or not security_id.isdigit():
         symbol = data.get("symbol")
         if not symbol:
             logging.error("Neither 'security_id' nor 'symbol' provided.")
