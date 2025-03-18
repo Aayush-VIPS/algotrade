@@ -11,15 +11,15 @@ logging.basicConfig(level=logging.INFO)
 
 # DhanHQ credentials – update these with your actual details
 DHAN_CLIENT_ID = "1103141889"
-DHAN_ACCESS_TOKEN = "your_dhan_access_token_here"
+DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzQ0NDc2ODEwLCJ0b2tlbkNvbnN1bWVyVHlwZSI6IlNFTEYiLCJ3ZWJob29rVXJsIjoiIiwiZGhhbkNsaWVudElkIjoiMTEwMzE0MTg4OSJ9.wMeUYEuX0U2txEfiyXnIssR4fepBOSuXEduH3CChCNS6MHV4Gy_qTDj3FRf5rKv4r1airtfEOq13T3QNWLuHPA"
 
 dhan = dhanhq(DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN)
 
-# Global dictionary to map a symbol (DISPLAY_NAME / SYMBOL_NAME) -> SECURITY_ID
+# Global dictionary to map SYMBOL_NAME -> SECURITY_ID
 instrument_lookup = {}
 
 def load_instrument_list_from_url(url):
-    """Loads the instrument list CSV from a remote URL and builds a lookup dictionary."""
+    """Loads instrument CSV from a remote URL and builds lookup dictionary."""
     global instrument_lookup
     try:
         response = requests.get(url)
@@ -27,20 +27,27 @@ def load_instrument_list_from_url(url):
         content = response.content.decode('utf-8')
         csvfile = io.StringIO(content)
         reader = csv.DictReader(csvfile)
+
         for row in reader:
-            symbol = row.get("DISPLAY_NAME") or row.get("SYMBOL_NAME")
+            symbol = row.get("SYMBOL_NAME") or row.get("DISPLAY_NAME") or row.get("INSTRUMENT")
             sec_id = row.get("SECURITY_ID")
+
             if symbol and sec_id:
                 instrument_lookup[symbol.strip().upper()] = sec_id.strip()
-        logging.info("Instrument list loaded successfully.")
+
+        logging.info("Instrument list loaded successfully. Total Symbols: %d", len(instrument_lookup))
+
+        # Debug: Print first 10 symbols
+        logging.info("Sample Symbols: %s", list(instrument_lookup.items())[:10])
+
     except Exception as e:
         logging.error("Failed to load instrument list: %s", e)
 
-# Load instrument list
+# Load instrument list from Google Drive
 remote_csv_url = "https://drive.google.com/uc?export=download&id=1HHUmaD3xL3hnVgDDqE2Rt98R5N7olLTs"
 load_instrument_list_from_url(remote_csv_url)
 
-# Exchange, Product & Order Type Mapping
+# Mappings
 EXCHANGE_MAP = {
     "NSE": dhan.NSE,
     "NSE_FNO": dhan.NSE_FNO,
@@ -63,7 +70,7 @@ ORDER_TYPE_MAP = {
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """ Webhook endpoint for TradingView alerts."""
+    """ Webhook endpoint for TradingView alerts. """
     logging.info("Received request from IP: %s", request.remote_addr)
     
     if request.is_json:
@@ -79,29 +86,35 @@ def webhook():
     
     action = data.get("action")
     quantity = data.get("quantity")
-    
+
     if not action or quantity is None:
         logging.error("Missing required fields: 'action' or 'quantity'")
         abort(400, description="Missing required fields: 'action' and 'quantity'")
-    
-    # Security ID Lookup (Fix applied)
+
     security_id = data.get("security_id")
-    if not security_id or not security_id.isdigit():
-        symbol = data.get("symbol")
+    symbol = data.get("symbol")
+
+    # If security_id is not provided, try to map from symbol
+    if not security_id:
         if not symbol:
             logging.error("Neither 'security_id' nor 'symbol' provided.")
             abort(400, description="Either 'security_id' or 'symbol' must be provided")
+
         security_id = instrument_lookup.get(symbol.strip().upper())
+        
         if not security_id:
-            logging.error("Symbol '%s' not found.", symbol)
-            abort(400, description=f"Symbol '{symbol}' not found")
-    
+            logging.error("Symbol '%s' not found in instrument list.", symbol)
+            abort(400, description=f"Symbol '{symbol}' not found in instrument list")
+
+    # Map values
     transaction_type = dhan.BUY if action.upper() == "BUY" else dhan.SELL
     exchange_segment = EXCHANGE_MAP.get(data.get("exchange_segment", "NSE").upper(), dhan.NSE)
     product_type = PRODUCT_MAP.get(data.get("product_type", "INTRA").upper(), dhan.INTRA)
     order_type = ORDER_TYPE_MAP.get(data.get("order_type", "MARKET").upper(), dhan.MARKET)
     price = data.get("price", 0)
-    
+
+    logging.info("Placing order for Security ID: %s", security_id)
+
     try:
         order_response = dhan.place_order(
             security_id=security_id,
@@ -115,7 +128,7 @@ def webhook():
     except Exception as e:
         logging.error("Order placement failed: %s", e)
         return jsonify({"status": "error", "message": str(e)}), 500
-    
+
     logging.info("Order placed successfully: %s", order_response)
     return jsonify({"status": "success", "order_response": order_response}), 200
 
